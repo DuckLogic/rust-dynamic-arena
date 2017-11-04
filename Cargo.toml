@@ -1,0 +1,7 @@
+[package]
+name = "dynamic-arena"
+version = "0.1.0"
+authors = ["Techcable <Techcable@techcable.net>"]
+
+[dev-dependencies]
+compiletest_rs = "*"
