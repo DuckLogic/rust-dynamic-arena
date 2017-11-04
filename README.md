@@ -1,4 +1,4 @@
-rust-dynamic-arena
+dynamic-arena [![crates.io](https://img.shields.io/crates/v/dynamic-arena.svg)](https://crates.io/crates/dynamic-arena)                  [![docs.rs](https://docs.rs/dynamic-arena/badge.svg)](https://docs.rs/dynamic-arena)
 ===================
 Dynamically typed arenas, supporting any `Sized` type.
 
@@ -10,6 +10,7 @@ Dynamically typed arenas, supporting any `Sized` type.
 - Instead of using multiple `typed_arena::Arena`s, you can use one `DynamicArena`
   - This helps reason about your code and significantly reduce memory usage
   - Since all the memory is contiguous, it could even help improve cache performance.
+- Compiles on latest stable
 
 ## Disadvantages
 - Slightly slower allocation than a `typed_arena::Arena` for non-`Copy` types
