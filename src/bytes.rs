@@ -96,3 +96,17 @@ impl ByteArena {
         self.chunks.borrow_mut().push(chunk);
     }
 }
+unsafe impl Send for ByteArena {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_send() {
+        let arena = ByteArena::new();
+        arena.alloc_zeroed(1000);
+        ::std::thread::spawn(move || {
+            arena.alloc_zeroed(1000);
+        });
+    }
+}

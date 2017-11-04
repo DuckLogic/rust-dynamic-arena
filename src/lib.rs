@@ -9,6 +9,36 @@ use std::{mem, ptr};
 pub mod bytes;
 use bytes::ByteArena;
 
+/// Marker trait that indicates whether or a `DynamicArena` may be sent across threads
+pub trait SendAbility: Sized {
+    fn create_arena<'a>() -> DynamicArena<'a, Self>;
+}
+/// Marker type that indicates you expect everything in the `DynamicArena` to be `Send`
+///
+/// Although this prevents you from allocating non-`Send` types in the arena,
+/// it allows you to `Send` the dynamic itself arena across threads.
+/// We can't safely implement `Send` for `DynamicArena` without this bound,
+/// since you could otherwise place a `Rc` in the arena, send it across threads,
+/// and then proceed to drop the arena and mutate the reference count.
+pub enum Sendable {}
+impl SendAbility for Sendable {
+    #[inline]
+    fn create_arena<'a>() -> DynamicArena<'a, Self> {
+        DynamicArena::new_send()
+    }
+}
+/// Marker type that indiates everything in the `DynamicArena` isn't nesicarrily `Send`.
+///
+/// This prevents you from `Send`ing the arena itself across threads,
+/// as described in the `Sendable` docs.
+pub enum NonSend {}
+impl SendAbility for NonSend {
+    #[inline]
+    fn create_arena<'a>() -> DynamicArena<'a, Self> {
+        DynamicArena::new_bounded()
+    }
+}
+
 struct DynamicArenaItem {
     drop: unsafe fn(*mut c_void),
     value: *mut c_void
@@ -22,6 +52,9 @@ impl Drop for DynamicArenaItem {
     }
 }
 unsafe impl Send for DynamicArenaItem {}
+
+/// An alias for an arena allocator which requires that everything is `Send + 'a`.
+pub type DynamicSendArena<'a> = DynamicArena<'a, Sendable>;
 
 /// An arena allocator where any type of object can be allocated.
 ///
@@ -68,7 +101,7 @@ unsafe impl Send for DynamicArenaItem {}
 /// Then, when someone needs to arena-allocate the struct they can use
 /// the same arena to allocate the `String` and `Vec<u32>` first,
 /// before they proceed to allocate the copyable struct.
-pub struct DynamicArena<'a> {
+pub struct DynamicArena<'a, S = NonSend> {
     /// The underlying arena, where we request that they allocate arbitrary bytes.
     handle: ByteArena,
     /// The list of untyped values we've allocated in the arena,
@@ -84,10 +117,12 @@ pub struct DynamicArena<'a> {
     /// Otherwise the lifetime would be 'variant',
     /// and borrow checking wouldn't properly enforce the bound for `alloc`.
     /// This is enforced by the `compile-fail/invalid-drop-counted.rs`
-    marker: PhantomData<*mut &'a ()>
+    marker: PhantomData<*mut &'a ()>,
+    send: PhantomData<S>
 }
-impl DynamicArena<'static> {
-    /// Create a new dynamic arena whose allocated items must outlive the `'static` lifetime,.
+impl DynamicArena<'static, NonSend> {
+    /// Create a new dynamic arena whose allocated items must outlive the `'static` lifetime,
+    /// and whose items aren't required to be `Send`.
     ///
     /// Usually this is what you want,
     /// since it's only a bound for the allocated items.
@@ -96,20 +131,13 @@ impl DynamicArena<'static> {
         DynamicArena::new_bounded()
     }
 }
-impl<'a> DynamicArena<'a>  {
+impl<'a, S> DynamicArena<'a, S>  {
     pub fn with_capacity(item_capacity: usize, byte_capacity: usize) -> Self {
         DynamicArena {
             handle: ByteArena::with_capacity(byte_capacity),
             items: RefCell::new(Vec::with_capacity(item_capacity)),
-            marker: PhantomData
-        }
-    }
-    /// Create a new empty arena, bounded by the inferred lifetime for this type `'a`
-    pub fn new_bounded() -> Self {
-        DynamicArena {
-            handle: ByteArena::new(),
-            items: RefCell::new(Vec::new()),
-            marker: PhantomData
+            marker: PhantomData,
+            send: PhantomData
         }
     }
     /// Allocate the specified value in this arena,
@@ -118,22 +146,9 @@ impl<'a> DynamicArena<'a>  {
     /// The bound on the item requires that `T: Copy`
     /// to ensure there's no drop function that needs to be invoked.
     #[inline]
-    pub fn alloc_copy<T: Copy>(&self, value: T) -> &mut T {
+    pub fn alloc_copy<T: Copy + Send>(&self, value: T) -> &mut T {
         unsafe {
             self.alloc_unchecked(value)
-        }
-    }
-    /// Allocate the specified value in this arena,
-    /// returning a reference which will be valid for the lifetime of the entire arena.
-    ///
-    /// The bound on this item requires that `T: 'a`
-    /// to ensure the drop function is safe to invoke.
-    #[inline]
-    pub fn alloc<T: 'a>(&self, value: T) -> &mut T {
-        unsafe {
-            let target = self.alloc_unchecked(value);
-            self.dynamic_drop(target);
-            target
         }
     }
     /// Allocate the specified value in this arena,
@@ -170,12 +185,69 @@ impl<'a> DynamicArena<'a>  {
         }
     }
 }
-impl<'a> Default for DynamicArena<'a> {
+impl<'a> DynamicArena<'a, Sendable> {
+    /// Create a new empty arena, bounded by the inferred lifetime for this type `'a`
+    ///
+    /// Since this arena has been marked `Sendable`,
+    /// all items in the arena need to implement `Send`.
+    pub fn new_send() -> Self {
+        DynamicArena {
+            handle: ByteArena::new(),
+            items: RefCell::new(Vec::new()),
+            marker: PhantomData,
+            send: PhantomData
+        }
+    }
+    /// Allocate the specified value in this arena,
+    /// returning a reference which will be valid for the lifetime of the entire arena.
+    ///
+    /// The bound on this item requires that `T: 'a`
+    /// to ensure the drop function is safe to invoke.
+    /// Additionally, since the arena is `Sendable`,
+    /// the bound on the item also requires that `T: Send`.
     #[inline]
-    fn default() -> Self {
-        DynamicArena::new_bounded()
+    pub fn alloc<T: Send + 'a>(&self, value: T) -> &mut T {
+        unsafe {
+            let target = self.alloc_unchecked(value);
+            self.dynamic_drop(target);
+            target
+        }
     }
 }
+impl<'a> DynamicArena<'a, NonSend> {
+    /// Create a new empty arena, bounded by the inferred lifetime for this type `'a`
+    ///
+    /// Since this arena has been marked `NonSend`,
+    /// the items in the arena don't necessarily need to implement `Send`.
+    pub fn new_bounded() -> Self {
+        DynamicArena {
+            handle: ByteArena::new(),
+            items: RefCell::new(Vec::new()),
+            marker: PhantomData,
+            send: PhantomData
+        }
+    }
+    /// Allocate the specified value in this arena,
+    /// returning a reference which will be valid for the lifetime of the entire arena.
+    ///
+    /// The bound on this item requires that `T: 'a`
+    /// to ensure the drop function is safe to invoke.
+    #[inline]
+    pub fn alloc<T: 'a>(&self, value: T) -> &mut T {
+        unsafe {
+            let target = self.alloc_unchecked(value);
+            self.dynamic_drop(target);
+            target
+        }
+    }
+}
+impl<'a, S: SendAbility> Default for DynamicArena<'a, S> {
+    #[inline]
+    fn default() -> Self {
+        S::create_arena()
+    }
+}
+unsafe impl<'a> Send for DynamicArena<'a, Sendable> {}
 
 #[cfg(test)]
 mod test {
@@ -211,6 +283,15 @@ mod test {
             }
         }
     }
+    #[test]
+    fn test_send() {
+        let arena = DynamicArena::new_send();
+        verify_copyable(do_copyable(&arena));
+        ::std::thread::spawn(move || {
+            verify_copyable(do_copyable(&arena));
+        });
+    }
+
     #[test]
     fn copyable() {
         let arena = DynamicArena::new();
@@ -251,10 +332,10 @@ mod test {
         drop(arena);
         assert_eq!(cell.get(), EXPECTED_DROP_COUNT);
     }
-    fn do_copyable<'a>(arena: &'a DynamicArena) -> Vec<&'a u32> {
+    fn do_copyable<'a, S>(arena: &'a DynamicArena<S>) -> Vec<&'a u32> {
         let mut results = Vec::new();
         for i in 0..10 {
-            results.push(&*arena.alloc(i * 3));
+            results.push(&*arena.alloc_copy(i * 3));
         }
         results
     }
