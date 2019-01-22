@@ -1,11 +1,14 @@
 [package]
 name = "dynamic-arena"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["Techcable <Techcable@techcable.net>"]
 description = "Dynamically typed arenas, supporting any `Sized` type."
 license = "MIT"
 documentation = "https://docs.rs/dynamic-arena"
 repository = "https://github.com/Techcable/rust-dynamic-arena"
+
+[dependencies]
+typed-arena = "^1.4.1"
 
 [dev-dependencies]
 compiletest_rs = "^0.3.1"

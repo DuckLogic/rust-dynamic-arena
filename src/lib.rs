@@ -1,13 +1,12 @@
 //! Implements dynamically typed arenas, where any type of item can be allocated.
-
+extern crate typed_arena;
 
 use std::marker::PhantomData;
 use std::cell::RefCell;
 use std::os::raw::c_void;
 use std::{mem, ptr};
 
-pub mod bytes;
-use bytes::ByteArena;
+use typed_arena::Arena;
 
 /// Marker trait that indicates whether or a `DynamicArena` may be sent across threads
 pub trait SendAbility: Sized {
@@ -103,7 +102,7 @@ pub type DynamicSendArena<'a> = DynamicArena<'a, Sendable>;
 /// before they proceed to allocate the copyable struct.
 pub struct DynamicArena<'a, S = NonSend> {
     /// The underlying arena, where we request that they allocate arbitrary bytes.
-    handle: ByteArena,
+    handle: Arena<u8>,
     /// The list of untyped values we've allocated in the arena,
     /// and whose drop functions need to be invoked.
     ///
@@ -134,7 +133,7 @@ impl DynamicArena<'static, NonSend> {
 impl<'a, S> DynamicArena<'a, S>  {
     pub fn with_capacity(item_capacity: usize, byte_capacity: usize) -> Self {
         DynamicArena {
-            handle: ByteArena::with_capacity(byte_capacity),
+            handle: Arena::with_capacity(byte_capacity),
             items: RefCell::new(Vec::with_capacity(item_capacity)),
             marker: PhantomData,
             send: PhantomData
@@ -158,7 +157,7 @@ impl<'a, S> DynamicArena<'a, S>  {
     /// and never runs the destructor, so its ownership needs to be tracked seperately.
     #[inline]
     pub unsafe fn alloc_unchecked<T>(&self, value: T) -> &mut T {
-        let ptr = self.handle.alloc_uninitialized(mem::size_of::<T>()) as *mut T;
+        let ptr = (*self.handle.alloc_uninitialized(mem::size_of::<T>())).as_ptr() as *mut T;
         ptr::write(ptr, value);
         &mut *ptr
     }
@@ -192,7 +191,7 @@ impl<'a> DynamicArena<'a, Sendable> {
     /// all items in the arena need to implement `Send`.
     pub fn new_send() -> Self {
         DynamicArena {
-            handle: ByteArena::new(),
+            handle: Arena::new(),
             items: RefCell::new(Vec::new()),
             marker: PhantomData,
             send: PhantomData
@@ -221,7 +220,7 @@ impl<'a> DynamicArena<'a, NonSend> {
     /// the items in the arena don't necessarily need to implement `Send`.
     pub fn new_bounded() -> Self {
         DynamicArena {
-            handle: ByteArena::new(),
+            handle: Arena::new(),
             items: RefCell::new(Vec::new()),
             marker: PhantomData,
             send: PhantomData
@@ -248,6 +247,13 @@ impl<'a, S: SendAbility> Default for DynamicArena<'a, S> {
     }
 }
 unsafe impl<'a> Send for DynamicArena<'a, Sendable> {}
+impl<'a, S> Drop for DynamicArena<'a, S> {
+    #[inline]
+    fn drop(&mut self) {
+        // Items must be dropped before the arena
+        self.items.get_mut().clear();
+    }
+}
 
 #[cfg(test)]
 mod test {
