@@ -12,10 +12,9 @@ fn main() {
         let cell = Box::new(Cell::new(0));
         for i in 0..5 {
             arena.alloc(DropCounted(&cell));
+            //~^ ERROR `cell` does not live long enough
         }
-        drop(cell);
     }
-    //~^ ERROR `cell` does not live long enough
     /*
      * Running this drop would reference an invalid pointer to the stack allocated `Cell`.
      * In order to maintain rust's safety guarantee this must be statically prevented.
