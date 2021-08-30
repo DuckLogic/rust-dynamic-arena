@@ -1,15 +1,17 @@
 //! Implements dynamically typed arenas, where any type of item can be allocated.
-extern crate typed_arena;
-
+#![deny(missing_docs)]
 use std::marker::PhantomData;
 use std::cell::RefCell;
 use std::os::raw::c_void;
-use std::{mem, ptr};
+use std::mem;
+use std::ptr::{self, NonNull};
+use std::alloc::Layout;
 
-use typed_arena::Arena;
+use bumpalo::Bump;
 
 /// Marker trait that indicates whether or a `DynamicArena` may be sent across threads
 pub trait SendAbility: Sized {
+    /// Create an arena corresponding to this type of thread-safety
     fn create_arena<'a>() -> DynamicArena<'a, Self>;
 }
 /// Marker type that indicates you expect everything in the `DynamicArena` to be `Send`
@@ -102,7 +104,7 @@ pub type DynamicSendArena<'a> = DynamicArena<'a, Sendable>;
 /// before they proceed to allocate the copyable struct.
 pub struct DynamicArena<'a, S = NonSend> {
     /// The underlying arena, where we request that they allocate arbitrary bytes.
-    handle: Arena<u8>,
+    handle: Bump,
     /// The list of untyped values we've allocated in the arena,
     /// and whose drop functions need to be invoked.
     ///
@@ -130,10 +132,15 @@ impl DynamicArena<'static, NonSend> {
         DynamicArena::new_bounded()
     }
 }
-impl<'a, S> DynamicArena<'a, S>  {
+impl<'a, S> DynamicArena<'a, S> {
+    /// Create an arena with pre-allocated capacity for the specified number of items
+    /// and bytes.
+    ///
+    /// NOTE: The "item" capacity excludes `Copy` references that
+    /// don't need to be dropped.
     pub fn with_capacity(item_capacity: usize, byte_capacity: usize) -> Self {
         DynamicArena {
-            handle: Arena::with_capacity(byte_capacity),
+            handle: Bump::with_capacity(byte_capacity),
             items: RefCell::new(Vec::with_capacity(item_capacity)),
             marker: PhantomData,
             send: PhantomData
@@ -145,28 +152,47 @@ impl<'a, S> DynamicArena<'a, S>  {
     /// The bound on the item requires that `T: Copy`
     /// to ensure there's no drop function that needs to be invoked.
     #[inline]
+    #[allow(clippy::mut_from_ref)]
     pub fn alloc_copy<T: Copy + Send>(&self, value: T) -> &mut T {
         unsafe {
             self.alloc_unchecked(value)
         }
     }
     /// Allocate the specified value in this arena,
-    /// without ensuring that its drop function would be safe to invoke.
+    /// without calling its `Drop` function.
     ///
-    /// Additionally this function leaks the underlying memory,
-    /// and never runs the destructor, so its ownership needs to be tracked seperately.
+    /// Since this doesn't call the 'Drop' impleentation,
+    /// this function leaks the underlying memory.
+    ///
+    /// ## Safety
+    /// Technically, this function is safe to use.
+    /// However, it leaks memory unconditionally (without calling Drop).
     #[inline]
+    #[allow(clippy::mut_from_ref)]
     pub unsafe fn alloc_unchecked<T>(&self, value: T) -> &mut T {
-        let ptr = (*self.handle.alloc_uninitialized(mem::size_of::<T>())).as_ptr() as *mut T;
-        ptr::write(ptr, value);
+        let ptr = self.alloc_layout(Layout::new::<T>()).as_ptr().cast::<T>();
+        ptr.write(value);
         &mut *ptr
+    }
+    /// Allocate space for an object with the specified layout
+    ///
+    /// The returned pointer points at uninitialized memory
+    ///
+    /// ## Safety
+    /// Technically, only the use of the memory is unsafe.
+    ///
+    /// It would theoretically be possible to mark this function safe,
+    /// just like [Bump::alloc_layout].
+    #[inline]
+    pub unsafe fn alloc_layout(&self, layout: Layout) -> NonNull<u8> {
+        self.handle.alloc_layout(layout)
     }
     /// Dynamically drop the specified value,
     /// invoking the drop function when the arena is dropped.
     ///
-    /// This is unsafe because the drop function isn't necessarily safe to invoke,
-    /// and the memory isn't nessicarrily .
-    /// Not only are you assuming that `ptr::drop_in_place` would be safe,
+    /// ## Safety
+    /// This assumes it's safe to drop the value at the same time the arena is dropped.
+    /// Not only are you assuming that [ptr::drop_in_place] would be safe,
     /// you're also assuming that the drop function won't reference any dangling pointers,
     /// and that [dropchk](https://doc.rust-lang.org/nomicon/dropck.html) would be successful.
     ///
@@ -183,6 +209,11 @@ impl<'a, S> DynamicArena<'a, S>  {
             })
         }
     }
+    /// Retrieve the underlying [bump allocator](bumpalo::Bump) for this arena
+    #[inline]
+    pub fn as_bumpalo(&self) -> &'_ bumpalo::Bump {
+        &self.handle
+    }
 }
 impl<'a> DynamicArena<'a, Sendable> {
     /// Create a new empty arena, bounded by the inferred lifetime for this type `'a`
@@ -191,7 +222,7 @@ impl<'a> DynamicArena<'a, Sendable> {
     /// all items in the arena need to implement `Send`.
     pub fn new_send() -> Self {
         DynamicArena {
-            handle: Arena::new(),
+            handle: Bump::new(),
             items: RefCell::new(Vec::new()),
             marker: PhantomData,
             send: PhantomData
@@ -205,6 +236,7 @@ impl<'a> DynamicArena<'a, Sendable> {
     /// Additionally, since the arena is `Sendable`,
     /// the bound on the item also requires that `T: Send`.
     #[inline]
+    #[allow(clippy::mut_from_ref)]
     pub fn alloc<T: Send + 'a>(&self, value: T) -> &mut T {
         unsafe {
             let target = self.alloc_unchecked(value);
@@ -220,7 +252,7 @@ impl<'a> DynamicArena<'a, NonSend> {
     /// the items in the arena don't necessarily need to implement `Send`.
     pub fn new_bounded() -> Self {
         DynamicArena {
-            handle: Arena::new(),
+            handle: Bump::new(),
             items: RefCell::new(Vec::new()),
             marker: PhantomData,
             send: PhantomData
@@ -232,6 +264,7 @@ impl<'a> DynamicArena<'a, NonSend> {
     /// The bound on this item requires that `T: 'a`
     /// to ensure the drop function is safe to invoke.
     #[inline]
+    #[allow(clippy::mut_from_ref)]
     pub fn alloc<T: 'a>(&self, value: T) -> &mut T {
         unsafe {
             let target = self.alloc_unchecked(value);
