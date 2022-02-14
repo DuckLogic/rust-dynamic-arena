@@ -21,7 +21,9 @@ pub trait SendAbility: Sized {
 /// We can't safely implement `Send` for `DynamicArena` without this bound,
 /// since you could otherwise place a `Rc` in the arena, send it across threads,
 /// and then proceed to drop the arena and mutate the reference count.
-pub enum Sendable {}
+pub struct Sendable {
+    _marker: ()
+}
 impl SendAbility for Sendable {
     #[inline]
     fn create_arena<'a>() -> DynamicArena<'a, Self> {
@@ -32,7 +34,9 @@ impl SendAbility for Sendable {
 ///
 /// This prevents you from `Send`ing the arena itself across threads,
 /// as described in the `Sendable` docs.
-pub enum NonSend {}
+pub struct NonSend {
+    _marker: std::rc::Rc<()>
+}
 impl SendAbility for NonSend {
     #[inline]
     fn create_arena<'a>() -> DynamicArena<'a, Self> {
@@ -279,7 +283,7 @@ impl<'a, S: SendAbility> Default for DynamicArena<'a, S> {
         S::create_arena()
     }
 }
-unsafe impl<'a> Send for DynamicArena<'a, Sendable> {}
+unsafe impl<'a, S: SendAbility + Send> Send for DynamicArena<'a, S> {}
 impl<'a, S> Drop for DynamicArena<'a, S> {
     #[inline]
     fn drop(&mut self) {
