@@ -1,0 +1,13 @@
+error[E0597]: `cell` does not live long enough
+  --> tests/compile-fail/invalid_drop_counted.rs:13:37
+   |
+13 |             arena.alloc(DropCounted(&cell));
+   |                                     ^^^^^ borrowed value does not live long enough
+14 |         }
+15 |     }
+   |     - `cell` dropped here while still borrowed
+...
+21 | }
+   | - borrow might be used here, when `arena` is dropped and runs the `Drop` code for type `DynamicArena`
+   |
+   = note: values in a scope are dropped in the opposite order they are defined

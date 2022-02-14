@@ -12,4 +12,4 @@ edition = "2018"
 bumpalo = "3"
 
 [dev-dependencies]
-compiletest_rs = "^0.5"
+trybuild = "1"
