@@ -1,11 +1,11 @@
 //! Implements dynamically typed arenas, where any type of item can be allocated.
 #![deny(missing_docs)]
-use std::marker::PhantomData;
-use std::cell::RefCell;
-use std::os::raw::c_void;
-use std::mem;
-use std::ptr::{self, NonNull};
 use std::alloc::Layout;
+use std::cell::RefCell;
+use std::marker::PhantomData;
+use std::mem;
+use std::os::raw::c_void;
+use std::ptr::{self, NonNull};
 
 use bumpalo::Bump;
 
@@ -22,7 +22,7 @@ pub trait SendAbility: Sized {
 /// since you could otherwise place a `Rc` in the arena, send it across threads,
 /// and then proceed to drop the arena and mutate the reference count.
 pub struct Sendable {
-    _marker: ()
+    _marker: (),
 }
 impl SendAbility for Sendable {
     #[inline]
@@ -35,7 +35,7 @@ impl SendAbility for Sendable {
 /// This prevents you from `Send`ing the arena itself across threads,
 /// as described in the `Sendable` docs.
 pub struct NonSend {
-    _marker: std::rc::Rc<()>
+    _marker: std::rc::Rc<()>,
 }
 impl SendAbility for NonSend {
     #[inline]
@@ -46,14 +46,12 @@ impl SendAbility for NonSend {
 
 struct DynamicArenaItem {
     drop: unsafe fn(*mut c_void),
-    value: *mut c_void
+    value: *mut c_void,
 }
 impl Drop for DynamicArenaItem {
     #[inline]
     fn drop(&mut self) {
-        unsafe {
-            (self.drop)(self.value)
-        }
+        unsafe { (self.drop)(self.value) }
     }
 }
 unsafe impl Send for DynamicArenaItem {}
@@ -123,7 +121,7 @@ pub struct DynamicArena<'a, S = NonSend> {
     /// and borrow checking wouldn't properly enforce the bound for `alloc`.
     /// This is enforced by the `compile-fail/invalid-drop-counted.rs`
     marker: PhantomData<*mut &'a ()>,
-    send: PhantomData<S>
+    send: PhantomData<S>,
 }
 impl DynamicArena<'static, NonSend> {
     /// Create a new dynamic arena whose allocated items must outlive the `'static` lifetime,
@@ -147,7 +145,7 @@ impl<'a, S> DynamicArena<'a, S> {
             handle: Bump::with_capacity(byte_capacity),
             items: RefCell::new(Vec::with_capacity(item_capacity)),
             marker: PhantomData,
-            send: PhantomData
+            send: PhantomData,
         }
     }
     /// Allocate the specified value in this arena,
@@ -158,9 +156,7 @@ impl<'a, S> DynamicArena<'a, S> {
     #[inline]
     #[allow(clippy::mut_from_ref)]
     pub fn alloc_copy<T: Copy + Send>(&self, value: T) -> &mut T {
-        unsafe {
-            self.alloc_unchecked(value)
-        }
+        unsafe { self.alloc_unchecked(value) }
     }
     /// Allocate the specified value in this arena,
     /// without calling its `Drop` function.
@@ -207,9 +203,10 @@ impl<'a, S> DynamicArena<'a, S> {
     pub unsafe fn dynamic_drop<T>(&self, value: *mut T) {
         if mem::needs_drop::<T>() {
             self.items.borrow_mut().push(DynamicArenaItem {
-                drop: mem::transmute::<unsafe fn(*mut T),
-                    unsafe fn(*mut c_void)>(ptr::drop_in_place::<T>),
-                value: value as *mut c_void
+                drop: mem::transmute::<unsafe fn(*mut T), unsafe fn(*mut c_void)>(
+                    ptr::drop_in_place::<T>,
+                ),
+                value: value as *mut c_void,
             })
         }
     }
@@ -229,7 +226,7 @@ impl<'a> DynamicArena<'a, Sendable> {
             handle: Bump::new(),
             items: RefCell::new(Vec::new()),
             marker: PhantomData,
-            send: PhantomData
+            send: PhantomData,
         }
     }
     /// Allocate the specified value in this arena,
@@ -259,7 +256,7 @@ impl<'a> DynamicArena<'a, NonSend> {
             handle: Bump::new(),
             items: RefCell::new(Vec::new()),
             marker: PhantomData,
-            send: PhantomData
+            send: PhantomData,
         }
     }
     /// Allocate the specified value in this arena,
@@ -314,15 +311,14 @@ mod test {
         pub fn with_depth(arena: &'a DynamicArena, depth: u32) -> &'a Self {
             arena.alloc_copy(match depth {
                 0 => SelfReferential(depth, None),
-                _ => SelfReferential(depth, Some(
-                    SelfReferential::with_depth(arena, depth - 1)))
+                _ => SelfReferential(depth, Some(SelfReferential::with_depth(arena, depth - 1))),
             })
         }
         #[inline]
         pub fn depth(&self) -> u32 {
             match self.1 {
                 Some(inner) => inner.depth() + 1,
-                None => 0
+                None => 0,
             }
         }
     }
